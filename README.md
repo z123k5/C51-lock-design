@@ -48,9 +48,6 @@
 #### 仿真电路原理图：
 ![仿真电路原理图](./images/schematic.png)
 
-#### 开发板适配电路：
-![开发板原理图](./images/dev_board_schematic.png)
-
 ### 3.2 软件设计
 
 #### 3.2.1 开机自检
