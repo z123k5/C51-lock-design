@@ -1,0 +1,910 @@
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN .\Objects\main.obj
+COMPILER INVOKED BY: D:\Program Files (Installed)\Keil_v5\C51\BIN\C51.EXE src\main.c OPTIMIZE(8,SPEED) BROWSE DEBUG OBJE
+                    -CTEXTEND PRINT(.\Listings\main.lst) OBJECT(.\Objects\main.obj)
+
+line level    source
+
+   1          #include <absacc.h>     // 扩展接口库
+   2          #include <intrins.h>    // 移位函数库
+   3          #include <reg52.h>      // 基本89C52库
+   4          
+   5          // 此处切换仿真器代码和开发板代码
+   6          #if 1
+   7          #define DISP_SEG P0 //扩展接口8255(U3)PA口地址,数码管字段输出口
+   8          #define DISP_BIT P2 //扩展接口8255(U3)PB口地址,数码管字位输出口
+   9          #define VKEY_RL P1  //扩展接口8255(U3)PC口地址,矩阵键盘行、列接口
+  10          #else
+              #define DISP_SEG XBYTE[0xfefc]   //扩展接口8255(U3)PA口地址,数码管字段输出口
+              #define DISP_BIT XBYTE[0xfefd]   //扩展接口8255(U3)PB口地址,数码管字位输出口
+              #define VKEY_RL XBYTE[0xfefe]    //扩展接口8255(U3)PC口地址,矩阵键盘行、列接口
+              #define U3CON XBYTE[0xfeff]      //扩展接口8255(U3)控制口地址
+              #endif
+  16          unsigned char gearTime = 0;         // 门锁时间（秒）
+  17          sbit gear = P3 ^ 0;
+  18          sbit beep = P3 ^ 2;
+  19          // sbit key6 = P3^2;
+  20          
+  21          // 显示缓存
+  22          unsigned char dispBuf[10] = {0x10};
+  23          enum { MENU_TIME, MENU_DATE, MENU_PWD, MENU_PWD_CHANGE1, MENU_PWD_CHANGE2, MENU_PWD_CHANGE3, MENU_ZIJIAN }
+             -;
+  24          
+  25          // 字符字典
+  26          enum {
+  27              DK_0,
+  28              DK_1,
+  29              DK_2,
+  30              DK_3,
+  31              DK_4,
+  32              DK_5,
+  33              DK_6,
+  34              DK_7,
+  35              DK_8,
+  36              DK_9,
+  37              DK_A,
+  38              DK_B,
+  39              DK_C,
+  40              DK_D,
+  41              DK_E,
+  42              DK_F,
+  43              DK_Space,
+  44              DK_Del,
+  45              DK_UdLine,
+  46              DK_Dot,
+  47              DK_D0,
+  48              DK_D1,
+  49              DK_D2,
+  50              DK_D3,
+  51              DK_D4,
+  52              DK_D5,
+  53              DK_D6,
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 2   
+
+  54              DK_D7,
+  55              DK_D8,
+  56              DK_D9,
+  57              DK_DA,
+  58              DK_DB,
+  59              DK_DC,
+  60              DK_DD,
+  61              DK_DE,
+  62              DK_DF,
+  63              DK_NUL,
+  64              DK_EOF,
+  65              DK_P,
+  66              DK_Equal,
+  67              DK_Rectangle
+  68          };
+  69          // 字符字段
+  70          unsigned char code segtable[] = {
+  71              0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8, 0x80, 0x90, // 0~9字段码
+  72              0x88, 0x83, 0xc6, 0xa1, 0x86, 0x8e, 0xff, 0xbf, 0xf7, 0x7f, // A~F,空格,-,_,.字段码
+  73              0x40, 0x79, 0x24, 0x30, 0x19, 0x12, 0x02, 0x78, 0x00, 0x10, // 0.~9.字段码
+  74              0x08, 0x03, 0x46, 0x21, 0x06, 0x0e,                         // A.~F.字段码
+  75              0xcc, 0xee, 0x8c, 0xb7, 0xa3                                // 空码,结束码,P,=,正方形
+  76          };
+  77          unsigned char Scan_code[] = {0xee, 0xed, 0xeb, 0xe7, 0xde, 0xdd, 0xdb, 0xd7,
+  78                                       0xbe, 0xbd, 0xbb, 0xb7, 0x7e, 0x7d, 0x7b, 0x77}; //键盘扫描码
+  79          unsigned char scan_buf[6] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10}; //键盘滚动滤波缓冲单元
+  80          
+  81          // 密码
+  82          unsigned char pwd[6] = {5, 3, 5, 8, 6, 6};  // 默认密码
+  83          unsigned char input[6], pwdBack[6];         // 输入密码、新密码
+  84          unsigned char inputLen = 0;                 // 输入密码的长度
+  85          unsigned char triedTimes = 0;               // 尝试连续输入密码的次数
+  86          unsigned char triedTimer = 0;               // 输入密码计数器
+  87          unsigned int temp;                          // 临时变量
+  88          
+  89          // 菜单
+  90          unsigned char menu = MENU_TIME;     // 菜单状态变量
+  91          unsigned char zijianpos = 0;        // 自检显示位置变量
+  92          
+  93          unsigned char settime = 0;          // 设置时间 ，0：不设置，1：设置时间，2：设置日期
+  94          unsigned char sgClick = 0;          // 是否单击
+  95          unsigned char hFast = 0;            // 时快调按下
+  96          unsigned long hhFastTime = 0;       // 时快调计数
+  97          unsigned int blinkTime = 0;         // 矩阵按键设置时间的光标闪烁计时器
+  98          unsigned char blinkIndex = 0;       // 矩阵按键设置时间的光标闪烁位置
+  99          unsigned char playType = 0;         // 播放类型：0不播放，1按键音，2失败，3成功
+ 100          unsigned int playTimer = 0;         // 蜂鸣器响一声计时器
+ 101          unsigned int playTime = 0;          // 播放次数
+ 102          unsigned char playSound = 0;        // 播放开关
+ 103          
+ 104          // 时间日期
+ 105          unsigned int year = 2022;
+ 106          unsigned char month = 1;
+ 107          unsigned char day = 1;
+ 108          unsigned char sec = 0;
+ 109          unsigned char min = 0;
+ 110          unsigned char hour = 0;
+ 111          unsigned int tempA, tempB, tempC;   // 用来临时存储时间日期
+ 112          
+ 113          // 延时函数，毫秒单位
+ 114          void delay_ms(unsigned int j) {
+ 115   1          unsigned int k;
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 3   
+
+ 116   1          for (; j > 0; j--)
+ 117   1              for (k = 0; k < 100; k++)
+ 118   1                  ;
+ 119   1      }
+ 120          
+ 121          // 拆字，在每个菜单分别放入显示缓存
+ 122          void display_buf() {
+ 123   1          int i;
+ 124   1          switch (menu) {
+ 125   2          case MENU_TIME:
+ 126   2              if(settime == 1) {
+ 127   3                  // 时
+ 128   3                  dispBuf[0] = tempA / 10;
+ 129   3                  dispBuf[1] = tempA % 10;
+ 130   3                  dispBuf[2] = DK_Del;
+ 131   3                  // 分
+ 132   3                  dispBuf[3] = tempB / 10;
+ 133   3                  dispBuf[4] = tempB % 10;
+ 134   3                  dispBuf[5] = DK_Del;
+ 135   3                  // 秒
+ 136   3                  dispBuf[6] = tempC / 10;
+ 137   3                  dispBuf[7] = tempC % 10;
+ 138   3                  dispBuf[8] = DK_EOF;
+ 139   3              } else {
+ 140   3                  // 时
+ 141   3                  dispBuf[0] = hour / 10;
+ 142   3                  dispBuf[1] = hour % 10;
+ 143   3                  dispBuf[2] = DK_Del;
+ 144   3                  // 分
+ 145   3                  dispBuf[3] = min / 10;
+ 146   3                  dispBuf[4] = min % 10;
+ 147   3                  dispBuf[5] = DK_Del;
+ 148   3                  // 秒
+ 149   3                  dispBuf[6] = sec / 10;
+ 150   3                  dispBuf[7] = sec % 10;
+ 151   3                  dispBuf[8] = DK_EOF;
+ 152   3              }
+ 153   2              break;
+ 154   2          case MENU_DATE:
+ 155   2              if(settime == 2) {
+ 156   3                  // 年
+ 157   3                  dispBuf[0] = tempA / 1000;
+ 158   3                  dispBuf[1] = (tempA - dispBuf[0] * 1000) / 100;
+ 159   3                  dispBuf[2] = (tempA - tempA / 100 * 100) / 10;
+ 160   3                  dispBuf[3] = DK_D0 + tempA % 10;
+ 161   3                  // 月
+ 162   3                  dispBuf[4] = tempB / 10;
+ 163   3                  dispBuf[5] = DK_D0 + tempB % 10;
+ 164   3                  // 日
+ 165   3                  dispBuf[6] = tempC / 10;
+ 166   3                  dispBuf[7] = tempC % 10;
+ 167   3                  dispBuf[8] = DK_EOF;
+ 168   3              } else {
+ 169   3                  // 年
+ 170   3                  dispBuf[0] = year / 1000;
+ 171   3                  dispBuf[1] = (year - dispBuf[0] * 1000) / 100;
+ 172   3                  dispBuf[2] = (year - year / 100 * 100) / 10;
+ 173   3                  dispBuf[3] = DK_D0 + year % 10;
+ 174   3                  // 月
+ 175   3                  dispBuf[4] = month / 10;
+ 176   3                  dispBuf[5] = DK_D0 + month % 10;
+ 177   3                  // 日
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 4   
+
+ 178   3                  dispBuf[6] = day / 10;
+ 179   3                  dispBuf[7] = day % 10;
+ 180   3                  dispBuf[8] = DK_EOF;
+ 181   3              }
+ 182   2              break;
+ 183   2      
+ 184   2          case MENU_PWD: case MENU_PWD_CHANGE1: case MENU_PWD_CHANGE2: case MENU_PWD_CHANGE3:
+ 185   2              if(triedTimes >= 3) {
+ 186   3                  dispBuf[0] = DK_F;
+ 187   3                  dispBuf[1] = DK_P;
+ 188   3                  dispBuf[2] = DK_DD;
+ 189   3                  dispBuf[3] = DK_Equal;
+ 190   3                  dispBuf[4] = triedTimer / 10;
+ 191   3                  dispBuf[5] = triedTimer % 10;
+ 192   3                  dispBuf[6] = DK_D5;
+ 193   3                  dispBuf[7] = DK_Space;
+ 194   3              } else {
+ 195   3                  if(menu == MENU_PWD || menu == MENU_PWD_CHANGE1) {
+ 196   4                      dispBuf[0] = DK_P;
+ 197   4                      dispBuf[1] = DK_Equal;
+ 198   4                  } else if(menu == MENU_PWD_CHANGE2) {
+ 199   4                      dispBuf[0] = DK_P;
+ 200   4                      dispBuf[1] = DK_D1;
+ 201   4                  } else if(menu == MENU_PWD_CHANGE3) {
+ 202   4                      dispBuf[0] = DK_P;
+ 203   4                      dispBuf[1] = DK_D2;
+ 204   4                  }
+ 205   3                  for (i = 2; i < 8; i++) {
+ 206   4                      if (i - 2 >= inputLen)
+ 207   4                         break;
+ 208   4                      if (menu == MENU_PWD_CHANGE2 || menu == MENU_PWD_CHANGE3)
+ 209   4                          dispBuf[i] = input[i - 2];
+ 210   4                      else
+ 211   4                          dispBuf[i] = DK_Rectangle;
+ 212   4                  }
+ 213   3                  for (; i < 8; i++)
+ 214   3                      dispBuf[i] = DK_UdLine;
+ 215   3                  dispBuf[8] = DK_NUL;
+ 216   3              }
+ 217   2              break;
+ 218   2          case MENU_ZIJIAN:
+ 219   2              for (i=0; i<8; i++) {
+ 220   3                  if (i == zijianpos) {
+ 221   4                      dispBuf[i] = DK_Del;
+ 222   4                  } else dispBuf[i] = DK_Space;
+ 223   3              }
+ 224   2              break;
+ 225   2          }
+ 226   1      }
+ 227          
+ 228          // 显示缓存到数码管
+ 229          void display_swbuf() {
+ 230   1          unsigned int i, j;
+ 231   1      #ifdef U3CON
+                  unsigned int disp_bit_con = 0x80; //字位控制码初值
+              #else
+ 234   1          unsigned int disp_bit_con = 0x01; //字位控制码初值
+ 235   1      #endif
+ 236   1          DISP_SEG = 0xff;                  //关显示，使各位亮度一致、避免频闪
+ 237   1      
+ 238   1          for (i = 0, j = 0; i < 10 && dispBuf[i] != DK_EOF; i++) {
+ 239   2              // 闪烁位
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 5   
+
+ 240   2              if (!(settime && blinkIndex == i && blinkTime < 900)) {
+ 241   3                  if (dispBuf[i] == DK_NUL) // 空码忽略
+ 242   3                      continue;
+ 243   3                  DISP_BIT = disp_bit_con;         // 8255（U3）的B口输出字位控制码
+ 244   3                  DISP_SEG = segtable[dispBuf[i]]; //显缓内容查字段码表得到字段码;
+ 245   3                  delay_ms(1);                     //延时1ms
+ 246   3                  DISP_SEG = 0xff;                 //关显示，使各位亮度一致、避免频闪
+ 247   3              }
+ 248   2      #ifdef U3CON
+                      disp_bit_con >>= 1; //字位控制码左移一位
+              #else
+ 251   2              disp_bit_con <<= 1; //字位控制码左移一位
+ 252   2      #endif
+ 253   2              j++;
+ 254   2          }
+ 255   1          for (; i < 10; i++) {
+ 256   2              DISP_BIT = disp_bit_con;       // 8255（U3）的B口输出字位控制码
+ 257   2              DISP_SEG = segtable[DK_Space]; //显缓内容查字段码表得到字段码;
+ 258   2              delay_ms(1);                   //延时1ms
+ 259   2              DISP_SEG = 0xff;               //关显示，使各位亮度一致、避免频闪
+ 260   2      #ifdef U3CON
+                      disp_bit_con >>= 1;            //字位控制码左移一位
+              #else
+ 263   2              disp_bit_con <<= 1;            //字位控制码左移一位
+ 264   2      #endif
+ 265   2          }
+ 266   1      }
+ 267          
+ 268          // 计时器初始化
+ 269          void timer_init() {
+ 270   1          TMOD = 0x22; // T1 方式2、定时、GATE=0；T0 方式2、定时，GATE=0
+ 271   1          TH1 = 0x00;
+ 272   1          TL1 = 0x00; //置T1计数初值0,计数256，每次中断定时256x12/11.0592 us
+ 273   1          TH0 = 0x00;
+ 274   1          TL0 = 0x00; //置T1计数初值0,计数256，每次中断定时256x12/11.0592 us
+ 275   1          EA = 1;     //开中断总允许
+ 276   1          //ET1 = 1;    // T1中断允许
+ 277   1          //TR1 = 1;    //启动T1定时(时钟是否走时开关 1/0)！！！
+ 278   1          ET0 = 1;    // T1中断允许
+ 279   1          TR0 = 1;    //启动T1定时(时钟是否走时开关 1/0)！！！
+ 280   1      }
+ 281          
+ 282          
+ 283          
+ 284          // 判断是否是闰年
+ 285          unsigned char isLeapYear(unsigned int y) {
+ 286   1          return y%400 == 0 || y % 4 == 0 && y %100 != 0;
+ 287   1      }
+ 288          
+ 289          // 获取某个月的天数
+ 290          unsigned char getDayOfMonth(unsigned int y, unsigned char m) {
+ 291   1          switch(m) {
+ 292   2              case 1:case 3:case 5:case 7:case 8:case 10:case 12:
+ 293   2                  return 31;
+ 294   2              case 2: return isLeapYear(y) ? 29:28;
+ 295   2              default:
+ 296   2                  return 30;
+ 297   2          }
+ 298   1      }
+ 299          
+ 300          // 更新时间处理函数
+ 301          void updateDateTime(unsigned char set, unsigned char index)
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 6   
+
+ 302          {
+ 303   1          switch(set) {
+ 304   2              case 0:
+ 305   2              if (sec >= 60) {
+ 306   3                  sec = 0;
+ 307   3                  min++;
+ 308   3                  if (min >= 60) {
+ 309   4                      min = 0;
+ 310   4                      hour++;
+ 311   4                      if (hour >= 24) {
+ 312   5                          hour = 0;
+ 313   5                          day++;
+ 314   5                          if(day >= getDayOfMonth(year, month) + 1) {
+ 315   6                              day = 1;
+ 316   6                              month++;
+ 317   6                              if(month >= 13) {
+ 318   7                                  month = 1;
+ 319   7                                  year++;
+ 320   7                                  if(year >= 9999) {
+ 321   8                                      year = 2000;
+ 322   8                                  }
+ 323   7                              }
+ 324   6                          }
+ 325   5                      }
+ 326   4                  }
+ 327   3              }
+ 328   2              break;
+ 329   2              
+ 330   2              case 1:
+ 331   2                  switch(index) {
+ 332   3                      case 7: case 6:
+ 333   3                          if (tempC >= 60) {
+ 334   4                              tempC = 0;
+ 335   4                              tempB++;
+ 336   4                          }
+ 337   3                      case 4:case 3:
+ 338   3                          if (tempB >= 60) {
+ 339   4                              tempB = 0;
+ 340   4                              tempA++;
+ 341   4                          }
+ 342   3                      case 1:case 0:
+ 343   3                          if (tempA >= 24) {
+ 344   4                              tempA = 0;
+ 345   4                          }
+ 346   3                  }
+ 347   2              break;
+ 348   2              
+ 349   2              case 2:
+ 350   2                  switch(index) {
+ 351   3                      case 7:case 6:case 5:case 4:
+ 352   3                          if (tempC >= getDayOfMonth(tempA, tempB) + 1) {
+ 353   4                              tempC = 1;
+ 354   4                              tempB++;
+ 355   4                          }
+ 356   3                      case 3:case 2:
+ 357   3                          if (tempB >= 13) {
+ 358   4                              tempB = 1;
+ 359   4                              tempA++;
+ 360   4                          }
+ 361   3                      case 1:case 0:
+ 362   3                          if (tempA >= 9999) {
+ 363   4                              tempA = 0;
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 7   
+
+ 364   4                          }
+ 365   3                  }
+ 366   2              break;
+ 367   2          }
+ 368   1      }
+ 369          
+ 370          // 定时器0中断处理函数
+ 371          void timer1_isr() interrupt 1 {
+ 372   1          static unsigned int j = 0;
+ 373   1      
+ 374   1          // 时、分快调计数
+ 375   1          if (hhFastTime < 3600)
+ 376   1              hhFastTime++;
+ 377   1      
+ 378   1          blinkTime++;
+ 379   1          if (blinkTime >= 1800)
+ 380   1              blinkTime = 0;
+ 381   1          
+ 382   1          if(playType != 0) {
+ 383   2              playTimer++;
+ 384   2          }
+ 385   1          
+ 386   1          j++;
+ 387   1          if (menu == MENU_ZIJIAN && hhFastTime >= 900) {
+ 388   2              playType = 1;
+ 389   2              playTime = 100;
+ 390   2              playTimer = 0;
+ 391   2              zijianpos++;
+ 392   2              if(zijianpos >= 8) menu = MENU_TIME;
+ 393   2              hhFastTime = 0;
+ 394   2          }
+ 395   1          if (j >= 3600) {
+ 396   2              j = 0;
+ 397   2              
+ 398   2              if(gear) {
+ 399   3                  if(gearTime <= 0) gear = 0;
+ 400   3                  else gearTime--;
+ 401   3              }
+ 402   2              
+ 403   2              if(triedTimes >= 3) {
+ 404   3                  if(triedTimer == 0) triedTimes = 0;
+ 405   3                  else triedTimer--;
+ 406   3              }
+ 407   2      
+ 408   2              //秒、分、时修改*如按日期规则修改，则可显示日期*
+ 409   2              sec++;
+ 410   2              updateDateTime(0, 0);
+ 411   2          }
+ 412   1      }
+ 413          
+ 414          // 矩阵键盘扫描
+ 415          void key_scan() {
+ 416   1          unsigned int i;
+ 417   1          unsigned char line; //行输入
+ 418   1          unsigned char row;  //列输入
+ 419   1      
+ 420   1          // 矩阵按键扫描
+ 421   1          // 滚动存储
+ 422   1          scan_buf[0] = scan_buf[1]; //新态、旧态滚动存储
+ 423   1          scan_buf[2] = scan_buf[3]; //滤波单元滚动存储
+ 424   1          scan_buf[3] = scan_buf[4];
+ 425   1      
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 8   
+
+ 426   1      #ifdef U3CON
+                  // 输入新键值
+                  //DISP_SEG = 0xff;          //关显示
+                  U3CON = 0x81;               //行（PC7-PC4）为输出，列(PC3-PC0)为输入
+                  VKEY_RL = 0x00;             //行输出0 
+                  row = VKEY_RL;
+              
+                  //DISP_SEG = 0xff;          //关显示
+                  U3CON = 0x88;               //行（PC7-PC4）为输入，列(PC3-PC0)为输出
+                  VKEY_RL = 0x00;             //列输出0
+                  line = VKEY_RL;
+              #else
+ 438   1          DISP_SEG = 0xff; //关显示
+ 439   1          VKEY_RL = 0x0f;  //行输出0
+ 440   1          delay_ms(1);
+ 441   1          row = VKEY_RL & 0x0f;
+ 442   1          DISP_SEG = 0xff; //关显示
+ 443   1          VKEY_RL = 0xf0;  //列输出0
+ 444   1          delay_ms(1);
+ 445   1          line = VKEY_RL & 0xf0;
+ 446   1      #endif
+ 447   1          row = row & 0x0f;         //屏蔽高4位
+ 448   1          line = line & 0xf0;       // 屏蔽低4位
+ 449   1          scan_buf[5] = line | row; //合并行列值
+ 450   1      
+ 451   1          // 键盘编码-->键值存入scan_buf[4]
+ 452   1          for (i = 0; i < 16; i++) {
+ 453   2              if (scan_buf[5] == Scan_code[i]) {
+ 454   3                  scan_buf[4] = i; //查键盘扫描码，转换成键值0-15
+ 455   3                  break;
+ 456   3              } else
+ 457   2                  scan_buf[4] = 16; //其它情况为16
+ 458   2          }
+ 459   1      
+ 460   1          // 滤波
+ 461   1          if ((scan_buf[2] == scan_buf[3]) && (scan_buf[2] == scan_buf[4]))
+ 462   1              scan_buf[1] = scan_buf[4];
+ 463   1      }
+ 464          
+ 465          // 矩阵键盘四键加减功能，与自选实验冲突，只用其中一个
+ 466          int key_pro_4() {
+ 467   1          int i;
+ 468   1          // 矩阵按键事件
+ 469   1          // 按下
+ 470   1          if ((scan_buf[0] == 0x10) && (scan_buf[1] != 0x10)) {
+ 471   2              //在密码菜单输入密码，修改密码
+ 472   2              if (menu == MENU_PWD || menu == MENU_PWD_CHANGE1 || menu == MENU_PWD_CHANGE2 || menu == MENU_PWD_C
+             -HANGE3) {
+ 473   3                  if(triedTimes >= 3) {
+ 474   4                      // 播放无法操作声音
+ 475   4                      playTime = 700;
+ 476   4                      playTimer = 0;
+ 477   4                      playType = 3;
+ 478   4                      return 1;
+ 479   4                  }
+ 480   3                  
+ 481   3                  if (inputLen < 6) {
+ 482   4                      if (scan_buf[1] >= 1 && scan_buf[1] <= 3)
+ 483   4                          input[inputLen++] = scan_buf[1];
+ 484   4                      else if (scan_buf[1] >= 5 && scan_buf[1] <= 7)
+ 485   4                          input[inputLen++] = scan_buf[1] - 1;
+ 486   4                      else if (scan_buf[1] >= 9 && scan_buf[1] <= 11)
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 9   
+
+ 487   4                          input[inputLen++] = scan_buf[1] - 2;
+ 488   4                      else if (scan_buf[1] == 14)
+ 489   4                          input[inputLen++] = 0;
+ 490   4                  }
+ 491   3                  
+ 492   3                  if (inputLen == 6) {
+ 493   4                      if(menu == MENU_PWD_CHANGE1) {
+ 494   5                          for(i = 0; i < 6; i++)
+ 495   5                              if(pwd[i] != input[i]) break;
+ 496   5                          if(i==6) {
+ 497   6                              menu = MENU_PWD_CHANGE2;
+ 498   6                              inputLen = 0;
+ 499   6                              // 播放输入成功声音
+ 500   6                              playTime = 300;
+ 501   6                              playTimer = 0;
+ 502   6                              playType = 4;
+ 503   6                          } else {
+ 504   6                              // 播放输入错误声音
+ 505   6                              playTime = 700;
+ 506   6                              playTimer = 0;
+ 507   6                              playType = 3;
+ 508   6                              triedTimes++;
+ 509   6                              if(triedTimes >= 3) {
+ 510   7                                  // 30秒钟后再输入
+ 511   7                                  triedTimer = 30;
+ 512   7                              }
+ 513   6                          }
+ 514   5                      } else if(menu == MENU_PWD_CHANGE2) {
+ 515   5                          for(i = 0; i < 6; i++)
+ 516   5                              pwdBack[i] = input[i];
+ 517   5                          menu = MENU_PWD_CHANGE3;
+ 518   5                          inputLen = 0;
+ 519   5                          
+ 520   5                          // 播放第一次输入成功声音
+ 521   5                          playTime = 300;
+ 522   5                          playTimer = 0;
+ 523   5                          playType = 4;
+ 524   5                          
+ 525   5                      } else if(menu == MENU_PWD_CHANGE3) {
+ 526   5                          for(i = 0; i < 6; i++)
+ 527   5                              if(pwdBack[i] != input[i]) break;
+ 528   5                          if(i==6) {
+ 529   6                              for(i = 0; i < 6; i++)
+ 530   6                                  pwd[i] = input[i];
+ 531   6                              menu = MENU_TIME;
+ 532   6                              inputLen = 0;
+ 533   6                              // 播放输入成功声音
+ 534   6                              playTime = 400;
+ 535   6                              playTimer = 0;
+ 536   6                              playType = 4;
+ 537   6                          } else {
+ 538   6                              inputLen = 0;
+ 539   6                              // 播放输入错误声音
+ 540   6                              playTime = 700;
+ 541   6                              playTimer = 0;
+ 542   6                              playType = 3;
+ 543   6                          }
+ 544   5                      } else {
+ 545   5                          for(i = 0; i < 6; i++)
+ 546   5                              if(pwd[i] != input[i]) break;
+ 547   5                          if(i == 6) {
+ 548   6                              gear = 1;
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 10  
+
+ 549   6                              gearTime = 3;  // 开锁3秒
+ 550   6                              inputLen = 0;
+ 551   6                              
+ 552   6                              menu = MENU_TIME;
+ 553   6                              // 播放输入成功声音
+ 554   6                              playTime = 300;
+ 555   6                              playTimer = 0;
+ 556   6                              playType = 4;
+ 557   6                              triedTimes = 0;
+ 558   6                          } else {
+ 559   6                              // 播放输入错误声音
+ 560   6                              playTime = 700;
+ 561   6                              playTimer = 0;
+ 562   6                              playType = 3;
+ 563   6                              triedTimes++;
+ 564   6                              if(triedTimes >= 3) {
+ 565   7                                  // 30秒钟后再输入
+ 566   7                                  triedTimer = 30;
+ 567   7                              }
+ 568   6                          }
+ 569   5                      }
+ 570   4                      inputLen = 0;
+ 571   4                  }
+ 572   3              }
+ 573   2          }
+ 574   1          return 0;
+ 575   1      }
+ 576          
+ 577          int key_pro_zixuan() {
+ 578   1          unsigned char key;
+ 579   1          
+ 580   1          // 按下
+ 581   1          if ((scan_buf[0] == 16) && (scan_buf[1] != 16)) {
+ 582   2              playType = 1;
+ 583   2              playTime = 200;
+ 584   2              playTimer = 0;
+ 585   2              
+ 586   2              switch (scan_buf[1]) {
+ 587   3              case 13:
+ 588   3                  if(settime) settime = 0;
+ 589   3                  else {
+ 590   4                      menu++;
+ 591   4                      if (menu > MENU_PWD)
+ 592   4                          menu = MENU_TIME;
+ 593   4                      if (menu == MENU_PWD)
+ 594   4                          inputLen = 0;
+ 595   4                  }
+ 596   3                  return 1;
+ 597   3              case 15:
+ 598   3                  if(settime == 1) {   // 更新时间
+ 599   4                      hour = tempA;
+ 600   4                      min = tempB;
+ 601   4                      sec = tempC;
+ 602   4                      settime = 0;
+ 603   4                  } else if(settime == 2) {   // 更新日期
+ 604   4                      year = tempA;
+ 605   4                      month = tempB;
+ 606   4                      day = tempC;
+ 607   4                      settime = 0;
+ 608   4                  } else if(hhFastTime < 1800) { // 0.2s
+ 609   4                      // 双击事件
+ 610   4                      menu = MENU_PWD_CHANGE1;
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 11  
+
+ 611   4                      inputLen = 0;
+ 612   4                      return 1;
+ 613   4                  } else {
+ 614   4                      if(menu == MENU_TIME) {
+ 615   5                          settime = 1; // 设置时间
+ 616   5                          tempA = hour;
+ 617   5                          tempB = min;
+ 618   5                          tempC = sec;
+ 619   5                      } else if(menu == MENU_DATE) {
+ 620   5                          settime = 2; // 设置日期
+ 621   5                          tempA = year;
+ 622   5                          tempB = month;
+ 623   5                          tempC = day;
+ 624   5                      }
+ 625   4                  }
+ 626   3              }
+ 627   2              if(settime) {
+ 628   3                  if (1 <= scan_buf[1] && scan_buf[1] <= 3) {
+ 629   4                      key = scan_buf[1];
+ 630   4                  } else if (5 <= scan_buf[1] && scan_buf[1] <= 7) {
+ 631   4                      key = scan_buf[1] - 1;
+ 632   4                  } else if (9 <= scan_buf[1] && scan_buf[1] <= 11) {
+ 633   4                      key = scan_buf[1] - 2;
+ 634   4                  } else if (13 <= scan_buf[1] && scan_buf[1] <= 15) {
+ 635   4                      key = scan_buf[1] - 3;
+ 636   4                  }
+ 637   3                  if (key < 10 || key == 11) {
+ 638   4                      if (key == 11)
+ 639   4                          key = 0;
+ 640   4                      switch (blinkIndex) {
+ 641   5                      case 0:
+ 642   5                          if(settime == 1) {
+ 643   6                              // 设置时十位
+ 644   6                              tempA = key * 10 + tempA % 10;
+ 645   6                          } else {
+ 646   6                              // 设置年千位
+ 647   6                              tempA = tempA - (tempA / 1000 * 1000) + key * 1000;
+ 648   6                          }
+ 649   5                          updateDateTime(settime, blinkIndex);
+ 650   5                          blinkIndex++;
+ 651   5                          break;
+ 652   5                      case 1:
+ 653   5                          if(settime == 1) {
+ 654   6                              // 设置时个位
+ 655   6                              tempA = (tempA / 10) * 10 + key;
+ 656   6                              updateDateTime(settime, blinkIndex);
+ 657   6                              blinkIndex++;
+ 658   6                          } else {
+ 659   6                              // 设置年百位
+ 660   6                              tempA = (tempA / 1000 * 10 + key) * 100 + (tempA - tempA / 100 * 100);
+ 661   6                              updateDateTime(settime, blinkIndex);
+ 662   6                          }
+ 663   5                          blinkIndex++;
+ 664   5                          break;
+ 665   5                      case 2:
+ 666   5                          if(settime == 1) {
+ 667   6                              ;
+ 668   6                          } else {
+ 669   6                              // 设置年十位
+ 670   6                              tempA = (tempA / 100 * 10 + key) * 10 + tempA % 10;
+ 671   6                          }
+ 672   5                          updateDateTime(settime, blinkIndex);
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 12  
+
+ 673   5                          blinkIndex++;
+ 674   5                          break;
+ 675   5                      case 3:
+ 676   5                          if(settime == 1) {
+ 677   6                              // 设置分十位
+ 678   6                              tempB = key * 10 + tempB % 10;
+ 679   6                          } else {
+ 680   6                              // 设置年个位
+ 681   6                              tempA = tempA / 10 * 10 + key;
+ 682   6                          }
+ 683   5                          updateDateTime(settime, blinkIndex);
+ 684   5                          blinkIndex++;
+ 685   5                          break;
+ 686   5                      case 4:
+ 687   5                          if(settime == 1) {
+ 688   6                              // 设置分个位
+ 689   6                              tempB = (tempB / 10) * 10 + key;
+ 690   6                              updateDateTime(settime, blinkIndex);
+ 691   6                              blinkIndex++;
+ 692   6                          } else {
+ 693   6                              // 设置月十位
+ 694   6                              tempB = key * 10 + tempB % 10;
+ 695   6                              updateDateTime(settime, blinkIndex);
+ 696   6                          }
+ 697   5                          blinkIndex++;
+ 698   5                          break;
+ 699   5                      case 5:
+ 700   5                          if(settime == 1) {
+ 701   6                              ;
+ 702   6                          } else {
+ 703   6                              // 设置月个位
+ 704   6                              tempB = tempB / 10 * 10 + key;
+ 705   6                          }
+ 706   5                          updateDateTime(settime, blinkIndex);
+ 707   5                          blinkIndex++;
+ 708   5                          break;
+ 709   5                      case 6:
+ 710   5                          if(settime == 1) {
+ 711   6                              // 设置秒十位
+ 712   6                              tempC = key * 10 + tempC % 10;
+ 713   6                          } else {
+ 714   6                              // 设置日十位
+ 715   6                              tempC = key * 10 + tempC % 10;
+ 716   6                          }
+ 717   5                          updateDateTime(settime, blinkIndex);
+ 718   5                          blinkIndex++;
+ 719   5                          break;
+ 720   5                      case 7:
+ 721   5                          if(settime == 1) {
+ 722   6                              // 设置秒个位
+ 723   6                              tempC = (tempC / 10) * 10 + key;
+ 724   6                          } else {
+ 725   6                              // 设置日个位
+ 726   6                              tempC = tempC / 10 * 10 + key;
+ 727   6                          }
+ 728   5                          updateDateTime(settime, blinkIndex);
+ 729   5                          blinkIndex = 0;
+ 730   5                          break;
+ 731   5                      }
+ 732   4                  }
+ 733   3                  
+ 734   3                  if (scan_buf[1] == 0) {
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 13  
+
+ 735   4                      // 向左移动，设置时、十位
+ 736   4                      blinkIndex--;
+ 737   4                      if (settime == 1) {
+ 738   5                          if (blinkIndex == 2 || blinkIndex == 5)
+ 739   5                              blinkIndex--;
+ 740   5                      }
+ 741   4                  }
+ 742   3                  if (scan_buf[1] == 4) {
+ 743   4                      // 向右移动，设置个位、分
+ 744   4                      blinkIndex++;
+ 745   4                      if (settime == 1) {
+ 746   5                          if (blinkIndex == 2 || blinkIndex == 5)
+ 747   5                              blinkIndex++;
+ 748   5                      }
+ 749   4                  }
+ 750   3                  if (blinkIndex == 8)
+ 751   3                      // 归位光标
+ 752   3                      blinkIndex = 0;
+ 753   3                  if (blinkIndex == -1)
+ 754   3                      // 光标移至末尾
+ 755   3                      blinkIndex = 7;
+ 756   3              }
+ 757   2          }
+ 758   1          
+ 759   1          // 松开
+ 760   1          if((scan_buf[0] != 0x10) && (scan_buf[1] == 0x10)) {
+ 761   2              switch(scan_buf[0]) {
+ 762   3                  case 0:
+ 763   3                      // 初始化时间日期
+ 764   3                      hour = 23;
+ 765   3                      min = 55;
+ 766   3                      sec = 20;
+ 767   3                      gear = 0;
+ 768   3      
+ 769   3                      // 初始化密码
+ 770   3                      pwd[0] = 5;
+ 771   3                      pwd[1] = 3;
+ 772   3                      pwd[2] = 5;
+ 773   3                      pwd[3] = 8;
+ 774   3                      pwd[4] = 6;
+ 775   3                      pwd[5] = 6;
+ 776   3      
+ 777   3                      // 初始化状态
+ 778   3                      settime = 0;
+ 779   3                      triedTimes = 0;               // 尝试连续输入密码的次数
+ 780   3                      triedTimer = 0;               // 输入密码计数器
+ 781   3                      zijianpos = 0;
+ 782   3                      playSound = 0;
+ 783   3      
+ 784   3                      // 进入自检菜单
+ 785   3                      menu = MENU_ZIJIAN;
+ 786   3                      break;
+ 787   3                      
+ 788   3                  case 15:
+ 789   3                      // PB2 单双击LED松开
+ 790   3                      if(!sgClick) {
+ 791   4                          sgClick = 1;
+ 792   4                          hhFastTime = 0; // 计时清零
+ 793   4                      } else
+ 794   3                          sgClick = 0;
+ 795   3              }
+ 796   2          }
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 14  
+
+ 797   1          return 0;
+ 798   1      }
+ 799          
+ 800          // 按键处理，分为两种
+ 801          void key_pro() {
+ 802   1          // 设置时间日期
+ 803   1          if(key_pro_zixuan()) return;
+ 804   1      
+ 805   1          // 输入密码
+ 806   1          if(key_pro_4()) return;
+ 807   1      }
+ 808          
+ 809          // 蜂鸣器
+ 810          void alarm() {
+ 811   1          // 蜂鸣器功能
+ 812   1          if(playType != 0) {
+ 813   2              if(playTime == 0) temp = 1;
+ 814   2              else temp = playTimer / playTime;
+ 815   2              if(temp % 2 == 0) playSound = 1;
+ 816   2              else playSound = 0;
+ 817   2              playTimer++;
+ 818   2              if(temp >= (playType << 1)) {
+ 819   3                  playType = 0;
+ 820   3                  playTimer = 0;
+ 821   3                  playSound = 0;
+ 822   3              }
+ 823   2          }
+ 824   1          beep = !playSound;
+ 825   1      }
+ 826          
+ 827          void main() {
+ 828   1      #ifdef U3CON
+                  U3CON = 0x89;   // 8255(U3)初始化，A、B口方式0输出，C口输入
+              #endif
+ 831   1          timer_init();
+ 832   1          delay_ms(60);
+ 833   1      
+ 834   1          // 初始化时间日期
+ 835   1          hour = 23;
+ 836   1          min = 55;
+ 837   1          sec = 20;
+ 838   1          gear = 0;
+ 839   1          
+ 840   1          // 进入自检菜单
+ 841   1          menu = MENU_ZIJIAN;
+ 842   1      
+ 843   1          // 主循环
+ 844   1          while (1) {
+ 845   2              // 刷新显示
+ 846   2              display_buf();
+ 847   2              display_swbuf();
+ 848   2              
+ 849   2              // 键盘检测
+ 850   2              key_scan();
+ 851   2              key_pro();
+ 852   2      
+ 853   2              // 蜂鸣器更新
+ 854   2              alarm();
+ 855   2          }
+ 856   1      }
+
+
+C51 COMPILER V9.60.0.0   MAIN                                                              09/26/2023 20:42:48 PAGE 15  
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   3391    ----
+   CONSTANT SIZE    =     41    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     89       5
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
